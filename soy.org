@@ -1,0 +1,293 @@
+* SOY/i - Sparse Operations with Yorick/IDL
+
+2005-Dec-01: SOI release v1.2 (IDL)
+2005-Oct-07: SOY release v1.2.01
+
+SOY/i (Sparse Operations with Yorick/IDL) originates from a collection of IDL/C routines that I originally put together for a specific purpose: efficient wavefront reconstruction in adaptive optics simulations. Seeing as its application is more general than that, however, I offer it here as a self-contained sparse matrix plugin for Yorick and IDL, with the time-critical functions coded in ANSI C.
+
+If you encounter problems or discover bugs, please let me hear about it by sending an email to
+* Revision history:
+
+  2005/12/01: SOI v1.2
+  - New IDL version released
+
+  2005/10/07: SOY v1.2.01
+  - Several minor revisions and bugfixes
+
+  2005/04/11: SOY v1.2
+  - Updated for Yorick v1.6.02
+  - Ported for 64-bit OS compatibility
+
+  2004/11/18: SOY v1.1
+  - Adapted as a plugin for Yorick v1.6.01
+  - Memory management from Yorick scripting level
+
+  2004/11/14: SOY v1.0
+  - Wrappers translated from IDL to Yorick (v1.5.15)
+* Overview
+** Features:
+    Utilizes a sparse row-wise format optimized for fast matrix-vector multiplication
+    Structure implementation for user-friendly interface on the Yorick/IDL scripting level
+    Explicit memory handling on the scripting level (read more)
+    As of v1.2 portable to 64-bit computing platforms (read more)
+    Offers basic matrix algebra and manipulation in single or double precision
+    Offers scripts for solving linear systems by e.g. conjugate gradients
+    Offers saving of sparse structures on a common FITS format or an internal binary format. Using the FITS format makes the saved matrices portable between the IDL/Yorick distributions.
+
+** Required packages:
+    Yorick: utility package yutils
+    IDL: astronomy library astrolib
+
+(A few important things when using SOY: read the fine print)
+
+* Download
+This is the second public release of SOY/i, version 1.2, which requires Yorick v1.6.02 (IDL version developed on v6.2, though it may be backwards compatible down to v5.5).
+
+	Download SOY/i v1.2 for Yorick/IDL (soyi.tar.gz)
+
+** Tarball contents:
+
+    soy.c : source code
+    soy.i : Yorick wrappers
+    soy.pro : IDL wrappers
+    check.i (Yorick)
+    README
+
+** Yorick installation (Yorick v1.6.02):
+
+    Unzip and untar into ($Y_SITE)/contrib/
+    cd soy, yorick -batch make.i
+    make, make check, make install
+    To load the plugin, type #include "soy.i" at the yorick prompt.
+
+** IDL installation:
+
+    Put soi.pro in the IDL path
+    Build the shared object (e.g.: gcc -O2 -shared -o soy.so soy.c)
+    Define SOI_DIR (shell variable) as the directory where you put soy.so.
+
+* Benchmarks
+Here are some benchmark results from comparing the sparse method versus explicit matrix computations in Yorick, using the included test script aotest.i. The test was run on an Intel Xeon 2.8 GHz PC, running Linux and Yorick v1.6.01.
+
+|---------------------------------------------+--------------------+----------------------------------------------|
+| method                                      | explicit           | sparse                                       |
+|---------------------------------------------+--------------------+----------------------------------------------|
+| Matrix multiplication (interaction matrix)  | GTG = G(,+)*G(,+); | gtg = rcoata(g);                             |
+| Matrix multiplication (regularization term) | CTC = C(,+)*C(,+); | ctc = rcoata(c);                             |
+| Matrix addition                             | A = GTG+CTC;       | a = ruoadd(gtg,ctc);                         |
+| Wavefront reconstruction                    | c = E(+,)*s(+);    | b = rcoxv(g,s);c = ruopcg(a,b,c0,tol=1.e-3); |
+| DM shape build                              | dm = H(,+)*c(+);   | dm = rcoxv(h,c);                             |
+|---------------------------------------------+--------------------+----------------------------------------------|
+
+Gain of the sparse method versus fill of the matrix, for all tests above:	
+
+* Sparse matrix technology primer
+The sparse row-wise format (Chang et al., 1969; Gustavson, 1972) employed here is one of the most commonly used storage schemes for sparse matrices (also described in Press et al., 1992; Pissanetsky, 1984). There are several variations on this format. SOY employs only the Row-wise Representation Complete and Ordered for an arbitrary real matrix - designated RR(C)O by Pissanetsky - and its upper triangular version RR(U)O for a symmetric real matrix. In SOY, these are abbreviated rco and ruo.
+
+A two-dimensional real matrix A may be represented in RR(C)O by specifying the three vectors IX, JX and XN:
+
+    * XN contains all the elements of A that have absolute values above the specified threshold.
+    * JX is an integer list of the original column indices in A for the elements in XN (i.e., XN and JX have the same length).
+    * IX is an integer list which counts the number of nonzero elements in each row in A. The elements of IX thus specify where in JX and XN to start looking for the nonzero elements of a given row.
+
+Here's a simple example to illustrate the principle. Define the floating-point matrix A as below:
+	
+     0. 9. 7. 0. 0.
+A =  0. 8. 0. 7. 7.
+     8. 0. 7. 0. 9.
+
+Storing only the nonzero elements would give the RR(C)O structure (with a zero-indexing convention):	
+
+IX = [ 0  2  5  8 ]
+JX = [ 1  2  1  3  4  0  2  4 ]
+XN = [ 9. 7. 8. 7. 7. 8. 7. 9.]
+
+With this setup, you can very efficiently crunch rows upon rows, addressing only the nonzero elements of the matrix. Crunching columns upon columns or rows, however, becomes too complicated to even think about—solution: transpose, then work by rows. [It follows that transposing a sparse matrix is non-trivial, but it can be done efficiently enough to justify its use in avoiding addressing by columns.]
+
+For a symmetric matrix S the rules are the same, except that the RR(U)O format stores the diagonal separately in the vector XD, and only the upper triangle of S are stored in IX, JX and XN. For instance:
+	
+     1. 0. 4. 2.
+S =  0. 2. 0. 1.
+     4. 0. 3. 0.
+     2. 1. 0. 5.
+
+becomes
+	
+IX = [ 0  2  3 ]
+JX = [ 1  2  2 ]
+XN = [ 4. 2. 1.]
+XD = [ 1. 2. 3. 5.]
+
+on RR(U)O format.
+
+** References
+
+    S. Pissanetsky, "Sparse Matrix Technology," (Academic Press, 1984)
+    W. Press, S. Teukolsky, W. Wetterling, and B. Flannery, "Numerical Recipes in C" (Camebridge University Press, 1992)
+
+* Routines
+These paragraphs refer to the Yorick release, though for the most part they apply equally to the IDL version, with only slightly different syntax.
+
+** Definition and conversion
+matrix type :  	RR(C)O 	RR(U)O
+
+*** Structure definition (float)
+struct rco
+{
+  int r;
+  int c;
+  int n;
+  pointer ix;
+  pointer jx;
+  pointer xn;
+  float t;
+}
+struct ruo
+{
+  int r;
+  int n;
+  pointer ix;
+  pointer jx;
+  pointer xn;
+  pointer xd;
+  float t;
+}
+
+*** Structure definition(double)
+struct rco_d
+{
+  int r;
+  int c;
+  int n;
+  pointer ix;
+  pointer jx;
+  pointer xn;
+  double t;
+}
+struct ruo_d
+{
+  int r;
+  int n;
+  pointer ix;
+  pointer jx;
+  pointer xn;
+  pointer xd;
+  double t;
+}
+
+*** Instantiation(float)
+a = rco();
+s = ruo();
+
+*** Instantiation(double)
+a = rco_d();
+s = ruo_d();
+
+*** Conversion full→sparse
+a = sprco(A);
+s = spruo(S);
+
+*** Conversion sparse→full
+A = rcoinf(a);
+S = ruoinf(s);
+
+*** Conversion RUO→RCO
+a = ruo2rco(s);
+
+** Algebraic operations
+
+*** Matrix-scalar mult.
+rcox,a,scalar;
+ruox,s,scalar;
+
+*** Matrix-vector mult.
+u = rcoxv(a,v);
+u = ruoxv(s,v);
+
+*** Matrix-matrix mult.
+c = rcoatb(a,b);
+s = rcoata(a);
+
+*** Matrix-matrix addition
+c = rcoadd(a,b);
+s = ruoadd(s2,s3);
+
+** Matrix manipulation
+
+*** Matrix transpose
+at = rcotr(a);
+
+*** Append rows
+rcobuild,a,v,t;
+
+*** Delete rows
+rcodr,a,r;
+
+*** Concatennate matrices
+spcon,a,b,diag=,ruo=;
+spcon,a,b,diag=,ruo=;
+
+*** Split RUO matrix into upper+lower+diagonal 	
+ptr = ruo_UDL(s);
+
+** Linear system solvers
+
+*** Conjugate gradient solver
+v = ruopcg(a,b,x0,&nit,tol=,itmax=,sgs=);
+
+** Utilities and scripts
+
+*** Save to file
+save_rco,a,file;
+save_ruo,s,file;
+
+*** Read from file
+a = restore_rco(file);
+s = restore_ruo(file);
+
+*** Laplacian operator
+a = Laplace_FDA(nx,aind);
+
+*** Interpolation operator
+ptr = intop(dimlist);
+
+*** Structure info
+spinfo,a;
+
+* SOY fine print
+These paragraphs refer to the Yorick release, though for the most part they apply equally to the IDL version, with only slightly different syntax.
+
+Matrix multiplications
+Currently, only multiplication between RCO matrices is implemented, in the functions rcoatb(a,b) ("a transpose b") and rcoata(a) ("a transpose a"). RUO multiplication is considerably more complicated to code, and I didn't do it yet. Solution: use ruo2rco(a) to convert your RUO matrices to RCO. This conversion function is reasonably efficient even though it has to call both rcotr and rcoadd. It is probably not a good solution, however, if you need to do it repeatedly and fast, e.g. in a loop.
+
+Memory management
+A complication with sparse matrices is that you don't know from the start how large they need to be. So when allocating memory, at some point you must venture a guess. As of v1.1, the user has two options: setting a global default value, or locally specifying memory allocation in the function call. The first is accomplished by defining extern MR,MN; within your script. The second is invoked by activating the keywords (ur=,un=) when calling the function. Their meaning are the same: MR and ur indicate the maximum number of rows to accomodate (i.e. the length of the IX vector, and also XD in RUO), MN and un the maximum number of non-zero elements to store (i.e. the lengths of JX and XN).
+    Most convenient for the user is probably to use both: give MR and MN values that you think will cover most of your applications without hogging too much memory, and in the special cases when something falls outside of this range, use the (ur=,un=) keywords to override. Note: in the case when ur and un are not given explicitly, MR and MN must be defined globally.
+
+Building sparse matrices
+If you were driven to a sparse representation by outrageous memory/cpu demands arising in your applicaiton, you will probably be interested in building your matrices directly on a sparse format (i.e., without using sprco or spruo). It is only at this level that the sparse method becomes really valuable - if the complexities of your matrices are such that you can still define them and operate with them explicitly, well, then you don't really need this package.
+    The function rcobuild(&a,v,t) builds an RCO matrix row by row. Each call to rcobuild appends a vector v to the RCO structure a, discarding elements below the threshold t. If you can come up with an algorithm that decribes your matrix row by row, you will thus never need to define it explicitly.
+
+Portability issues
+As of SOY release 1.2, the structure objects are no longer passed between the Yorick and C levels for (restricted) portability to LP64 type 64-bit platforms. Consequently, the structure typedef statemets in soy.c are gone, and long are redefined as int. However, the code has not been adapted to make use of the extended address space of a true 64-bit architecture. Pointers are still being dereferenced to integers, which means that truncation would occur if memory beyond the 32-bit address space was used, with strage behavior and/or segmentation errors ensuing. The v1.2 release has been verified on an 2GB AMD64 architecture with Yorick 1.6.02 compiled both to 64-bit and 32-bit (using the "-m32 -malign-double" compilation flags) versions under Red Hat Enterprise Linux 3, and also on a G4 Mac OS under 10.3.8 (32-bit). If you encouter problems with this version of SOY on a specific platform, please send a bug report to .
+
+Explicit handling of sparse structures
+To use the functions provided in SOY, no deeper knowledge of the structures are required. To build your own functions operating with RCO or RUO structures, however, you will need to manipulate their structure members directly. This is easy, but a few rules must be obeyed:
+
+    To initialize e.g. an empty RCO structure, a = rco().
+    The integer scalars a.r, a.c and a.n must be set to the number of rows, columns (only RCO), and elements.
+    The floating-point scalar a.t (threshold) is optional, and should defaults to 0 if not set.
+    The pointers a.ix, a.jx, a.xn and a.xd (only RUO) must be dereferenced to integer (IX and JX) arrays and floating point (XN and XD) arrays of the proper size. That is, with ur and un as defined in the paragraph above ("Memory management"):
+        a.ix = &array(int,ur)
+        a.jx = &array(int,un)
+        a.xn = &array(float,un)
+        a.xd = &array(float,ur) (only RUO)
+    Elements of the IX and JX vectors observe a 0-indexing convention! to conform with the C description. Careful not to confuse this with Yorick's 1-indexing when writing scripts....that way lies madness.
+    To access the vector elements one must in Yorick type e.g. (*a.xn)(i), for element i.
+    It is possible to create arrays of sparse structures, by initializing e.g. a = array(rco,3). Then (*a(j).xn)(i) is the i'th element of the IX vector of the j'th RCO matrix.
+
+License
+This work is free software: it comes without any warranty, and you may redistribute and modify it under the terms of the GNU General Public License.
+
+Credits
+Thanks to Brent Ellerbroek for making me realize I actually needed this stuff; Hans Ludwig for help with the coding; and François Rigaut for releasing an application (YAO) that forced me to build this Yorick version.
